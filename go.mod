@@ -1,4 +1,4 @@
-module postui
+module github.com/KharpukhaevV/postui
 
 go 1.24.2
 
