@@ -2,11 +2,9 @@ package httpclient
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/KharpukhaevV/postui/models"
@@ -96,25 +94,4 @@ func NewHTTPRequest(model *models.AppModel) HTTPRequest {
 		Params:  model.GetParams(),
 		Body:    bodyBytes,
 	}
-}
-
-// FormatJSON форматирует JSON строку с правильными отступами
-func FormatJSON(input string) string {
-	if strings.TrimSpace(input) == "" {
-		return ""
-	}
-
-	var formatted bytes.Buffer
-	err := json.Indent(&formatted, []byte(input), "", "  ")
-	if err != nil {
-		// Если не валидный JSON, пытаемся определить тип контента
-		trimmed := strings.TrimSpace(input)
-		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
-			// Похоже на JSON, но с ошибкой - возвращаем как есть
-			return input
-		}
-		// Не JSON - возвращаем как есть
-		return input
-	}
-	return formatted.String()
 }

@@ -22,6 +22,14 @@ func NewEventHandler() *EventHandler {
 
 // HandleKeyEvent обрабатывает события клавиш и возвращает флаг, если событие было "съедено"
 func (h *EventHandler) HandleKeyEvent(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd, bool) {
+	// Глобальные обработчики (сохранение, удаление)
+	if model.IsSaving() {
+		return h.handleSaveAsPrompt(model, msg)
+	}
+	if model.IsDeleting() {
+		return h.handleDeleteConfirmation(model, msg)
+	}
+
 	if !model.GetInputMode() {
 		return h.handleNavigationMode(model, msg)
 	}
@@ -36,35 +44,47 @@ func (h *EventHandler) handleNavigationMode(model *models.AppModel, msg tea.KeyM
 	case "i", "a":
 		model.SetInputMode(true)
 		h.updateFocus(model)
-		return model, nil, true // Ключ обработан, не передавать дальше
+		return model, nil, true
+	case "ctrl+s":
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetIsSaving(true)
+			model.GetSaveNameInput().Focus()
+		}
+		return model, nil, true
 
 	// Переключение вкладок и методов
 	case "left", "h":
 		if model.GetActiveTab() == models.TabRequest && model.GetActiveSection() == models.SectionMethod {
 			model.SetSelectedMethod(models.HTTPMethod((int(model.GetSelectedMethod()) - 1 + len(models.MethodNames)) % len(models.MethodNames)))
 		} else {
-			model.SetActiveTab(models.TabRequest)
+			currentTab := (int(model.GetActiveTab()) - 1 + 3) % 3
+			model.SetActiveTab(models.Tab(currentTab))
 		}
 		return model, nil, true
 	case "right", "l":
 		if model.GetActiveTab() == models.TabRequest && model.GetActiveSection() == models.SectionMethod {
 			model.SetSelectedMethod(models.HTTPMethod((int(model.GetSelectedMethod()) + 1) % len(models.MethodNames)))
 		} else {
-			model.SetActiveTab(models.TabResponse)
+			currentTab := (int(model.GetActiveTab()) + 1) % 3
+			model.SetActiveTab(models.Tab(currentTab))
 		}
 		return model, nil, true
 
 	// Навигация по секциям на вкладке "Запрос"
-	case "k": // Вверх
+	case "k", "up":
 		if model.GetActiveTab() == models.TabRequest {
 			model.SetActiveSection(models.Section((int(model.GetActiveSection()) + 4) % 5))
 			h.updateFocus(model)
+		} else if model.GetActiveTab() == models.TabSaved {
+			*model.GetSavedList(), _ = model.GetSavedList().Update(msg)
 		}
 		return model, nil, true
-	case "j": // Вниз
+	case "j", "down":
 		if model.GetActiveTab() == models.TabRequest {
 			model.SetActiveSection(models.Section((int(model.GetActiveSection()) + 1) % 5))
 			h.updateFocus(model)
+		} else if model.GetActiveTab() == models.TabSaved {
+			*model.GetSavedList(), _ = model.GetSavedList().Update(msg)
 		}
 		return model, nil, true
 	case "tab":
@@ -79,56 +99,29 @@ func (h *EventHandler) handleNavigationMode(model *models.AppModel, msg tea.KeyM
 			h.updateFocus(model)
 		}
 		return model, nil, true
-	case "1":
+	case "1", "2", "3", "4", "5":
 		if model.GetActiveTab() == models.TabRequest {
-			model.SetActiveSection(models.SectionMethod)
-			h.updateFocus(model)
-		}
-		return model, nil, true
-	case "2":
-		if model.GetActiveTab() == models.TabRequest {
-			model.SetActiveSection(models.SectionURL)
-			h.updateFocus(model)
-		}
-		return model, nil, true
-	case "3":
-		if model.GetActiveTab() == models.TabRequest {
-			model.SetActiveSection(models.SectionHeaders)
-			h.updateFocus(model)
-		}
-		return model, nil, true
-	case "4":
-		if model.GetActiveTab() == models.TabRequest {
-			model.SetActiveSection(models.SectionBody)
-			h.updateFocus(model)
-		}
-		return model, nil, true
-	case "5":
-		if model.GetActiveTab() == models.TabRequest {
-			model.SetActiveSection(models.SectionParams)
+			section := 0
+			switch msg.String() {
+			case "1":
+				section = 0
+			case "2":
+				section = 1
+			case "3":
+				section = 2
+			case "4":
+				section = 3
+			case "5":
+				section = 4
+			}
+			model.SetActiveSection(models.Section(section))
 			h.updateFocus(model)
 		}
 		return model, nil, true
 
-	// Прокрутка на вкладке "Ответ"
-	case "up":
-		if model.GetActiveTab() == models.TabResponse {
-			model.GetResponseVP().LineUp(1)
-		}
-		return model, nil, true
-	case "down":
-		if model.GetActiveTab() == models.TabResponse {
-			model.GetResponseVP().LineDown(1)
-		}
-		return model, nil, true
-	case "pageup":
-		if model.GetActiveTab() == models.TabResponse {
-			model.GetResponseVP().PageUp()
-		}
-		return model, nil, true
-	case "pagedown":
-		if model.GetActiveTab() == models.TabResponse {
-			model.GetResponseVP().PageDown()
+	case "d":
+		if model.GetActiveTab() == models.TabSaved {
+			model.SetIsDeleting(true)
 		}
 		return model, nil, true
 
@@ -139,7 +132,7 @@ func (h *EventHandler) handleNavigationMode(model *models.AppModel, msg tea.KeyM
 		model, cmd := h.handleBackspaceKey(model)
 		return model, cmd, true
 	}
-	return model, nil, false // Ключ не обработан
+	return model, nil, false
 }
 
 // handleInputMode обрабатывает события клавиш в режиме ввода
@@ -153,16 +146,63 @@ func (h *EventHandler) handleInputMode(model *models.AppModel, msg tea.KeyMsg) (
 		if model.GetActiveSection() != models.SectionBody {
 			return model, tea.Quit, true
 		}
+	case "enter":
+		// Позволяем добавлять заголовки/параметры по Enter в режиме ввода
+		if model.GetActiveSection() == models.SectionHeaders || model.GetActiveSection() == models.SectionParams {
+			model, cmd := h.handleEnterOnRequestTab(model)
+			return model, cmd, true // "Съедаем" Enter
+		}
 	}
 	return model, nil, false // Ключ не обработан, передать компоненту
 }
 
-// handleEnterKey обрабатывает клавишу Enter в зависимости от активной секции
+// --- Обработчики специальных режимов ---
+
+func (h *EventHandler) handleSaveAsPrompt(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd, bool) {
+	switch msg.String() {
+	case "enter":
+		name := model.GetSaveNameInput().Value()
+		if name != "" {
+			model.AddNewSavedRequest(name)
+		}
+		model.GetSaveNameInput().SetValue("")
+		model.GetSaveNameInput().Blur()
+		model.SetIsSaving(false)
+	case "esc":
+		model.GetSaveNameInput().SetValue("")
+		model.GetSaveNameInput().Blur()
+		model.SetIsSaving(false)
+	}
+	// Передаем событие в поле ввода имени
+	*model.GetSaveNameInput(), _ = model.GetSaveNameInput().Update(msg)
+	return model, nil, true // "Съедаем" событие в любом случае
+}
+
+func (h *EventHandler) handleDeleteConfirmation(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd, bool) {
+	switch strings.ToLower(msg.String()) {
+	case "y":
+		model.DeleteSelectedRequest()
+		model.SetIsDeleting(false)
+	case "n", "esc":
+		model.SetIsDeleting(false)
+	}
+	return model, nil, true // "Съедаем" событие в любом случае
+}
+
+// --- Основные действия ---
+
 func (h *EventHandler) handleEnterKey(model *models.AppModel) (*models.AppModel, tea.Cmd) {
-	if model.GetActiveTab() != models.TabRequest {
+	switch model.GetActiveTab() {
+	case models.TabRequest:
+		return h.handleEnterOnRequestTab(model)
+	case models.TabSaved:
+		model.LoadRequestFromSaved()
 		return model, nil
 	}
+	return model, nil
+}
 
+func (h *EventHandler) handleEnterOnRequestTab(model *models.AppModel) (*models.AppModel, tea.Cmd) {
 	switch model.GetActiveSection() {
 	case models.SectionHeaders:
 		if model.GetHeaderInput().Value() != "" {
@@ -172,7 +212,6 @@ func (h *EventHandler) handleEnterKey(model *models.AppModel) (*models.AppModel,
 				model.GetHeaderInput().SetValue("")
 			}
 		}
-		return model, nil
 	case models.SectionParams:
 		if model.GetParamInput().Value() != "" {
 			parts := strings.SplitN(model.GetParamInput().Value(), "=", 2)
@@ -181,17 +220,15 @@ func (h *EventHandler) handleEnterKey(model *models.AppModel) (*models.AppModel,
 				model.GetParamInput().SetValue("")
 			}
 		}
-		return model, nil
 	default:
 		if model.URLInputValue() != "" {
 			model.SetLoading(true)
 			return model, h.sendRequest(model)
 		}
-		return model, nil
 	}
+	return model, nil
 }
 
-// handleBackspaceKey обрабатывает клавишу Backspace в зависимости от активной секции
 func (h *EventHandler) handleBackspaceKey(model *models.AppModel) (*models.AppModel, tea.Cmd) {
 	if model.GetActiveTab() != models.TabRequest {
 		return model, nil
@@ -209,7 +246,6 @@ func (h *EventHandler) handleBackspaceKey(model *models.AppModel) (*models.AppMo
 	return model, nil
 }
 
-// sendRequest отправляет HTTP запрос и возвращает соответствующую команду
 func (h *EventHandler) sendRequest(model *models.AppModel) tea.Cmd {
 	return func() tea.Msg {
 		req := httpclient.NewHTTPRequest(model)
@@ -221,7 +257,6 @@ func (h *EventHandler) sendRequest(model *models.AppModel) tea.Cmd {
 	}
 }
 
-// updateFocus обновляет фокус для компонентов ввода в зависимости от активной секции
 func (h *EventHandler) updateFocus(model *models.AppModel) {
 	model.GetURLInput().Blur()
 	model.GetHeaderInput().Blur()
@@ -242,29 +277,33 @@ func (h *EventHandler) updateFocus(model *models.AppModel) {
 	}
 }
 
-// UpdateComponents обновляет компоненты ввода в зависимости от активной секции
 func (h *EventHandler) UpdateComponents(model *models.AppModel, msg tea.Msg) (*models.AppModel, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
-	if model.GetActiveTab() == models.TabRequest && model.GetInputMode() {
-		switch model.GetActiveSection() {
-		case models.SectionURL:
-			*model.GetURLInput(), cmd = model.GetURLInput().Update(msg)
-			cmds = append(cmds, cmd)
-		case models.SectionHeaders:
-			*model.GetHeaderInput(), cmd = model.GetHeaderInput().Update(msg)
-			cmds = append(cmds, cmd)
-		case models.SectionBody:
-			*model.GetBodyInput(), cmd = model.GetBodyInput().Update(msg)
-			cmds = append(cmds, cmd)
-		case models.SectionParams:
-			*model.GetParamInput(), cmd = model.GetParamInput().Update(msg)
-			cmds = append(cmds, cmd)
+	switch model.GetActiveTab() {
+	case models.TabRequest:
+		if model.GetInputMode() {
+			switch model.GetActiveSection() {
+			case models.SectionURL:
+				*model.GetURLInput(), cmd = model.GetURLInput().Update(msg)
+				cmds = append(cmds, cmd)
+			case models.SectionHeaders:
+				*model.GetHeaderInput(), cmd = model.GetHeaderInput().Update(msg)
+				cmds = append(cmds, cmd)
+			case models.SectionBody:
+				*model.GetBodyInput(), cmd = model.GetBodyInput().Update(msg)
+				cmds = append(cmds, cmd)
+			case models.SectionParams:
+				*model.GetParamInput(), cmd = model.GetParamInput().Update(msg)
+				cmds = append(cmds, cmd)
+			}
 		}
-	} else if model.GetActiveTab() == models.TabResponse {
-		// Всегда позволяем прокрутку на вкладке ответа
+	case models.TabResponse:
 		*model.GetResponseVP(), cmd = model.GetResponseVP().Update(msg)
+		cmds = append(cmds, cmd)
+	case models.TabSaved:
+		*model.GetSavedList(), cmd = model.GetSavedList().Update(msg)
 		cmds = append(cmds, cmd)
 	}
 

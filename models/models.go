@@ -4,7 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
 
+	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -17,6 +21,7 @@ type Tab int
 const (
 	TabRequest Tab = iota
 	TabResponse
+	TabSaved
 )
 
 // Section представляет различные секции интерфейса
@@ -43,22 +48,37 @@ const (
 	MethodOPTIONS
 )
 
-// MethodNames сопоставляет HTTP методы с их строковыми представлениями
 var MethodNames = []string{"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
 
-// Param представляет параметр запроса
+// --- Структуры данных ---
+
 type Param struct {
-	Key   string
-	Value string
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
-// Header представляет HTTP заголовок
 type Header struct {
-	Key   string
-	Value string
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }
 
-// ResponseData содержит информацию об HTTP ответе
+// SavedRequest определяет структуру для сохранения запроса в JSON
+type SavedRequest struct {
+	Name    string     `json:"name"`
+	Method  HTTPMethod `json:"method"`
+	URL     string     `json:"url"`
+	Body    string     `json:"body"`
+	Headers []Header   `json:"headers"`
+	Params  []Param    `json:"params"`
+}
+
+// Implement list.Item interface for SavedRequest
+func (sr SavedRequest) Title() string { return sr.Name }
+func (sr SavedRequest) Description() string {
+	return fmt.Sprintf("[%s] %s", MethodNames[sr.Method], sr.URL)
+}
+func (sr SavedRequest) FilterValue() string { return sr.Name }
+
 type ResponseData struct {
 	Body       string
 	Status     string
@@ -66,23 +86,26 @@ type ResponseData struct {
 	StatusCode int
 }
 
-// ErrorData содержит информацию об ошибке
 type ErrorData struct {
 	Message string
 }
 
 // AppModel представляет основное состояние приложения
 type AppModel struct {
-	// Компоненты ввода
-	urlInput    textinput.Model
-	bodyInput   textarea.Model
-	responseVP  viewport.Model
-	paramInput  textinput.Model
-	headerInput textinput.Model
+	// Компоненты
+	urlInput      textinput.Model
+	bodyInput     textarea.Model
+	responseVP    viewport.Model
+	paramInput    textinput.Model
+	headerInput   textinput.Model
+	savedList     list.Model
+	saveNameInput textinput.Model
 
 	// Данные
-	params  []Param
-	headers []Header
+	params        []Param
+	headers       []Header
+	savedRequests []list.Item // []SavedRequest
+	configPath    string
 
 	// Состояние
 	activeTab      Tab
@@ -94,22 +117,24 @@ type AppModel struct {
 	responseTime   string
 	errorMsg       string
 	inputMode      bool
+	isSaving       bool
+	isDeleting     bool
 
 	// Размеры
 	width  int
 	height int
 }
 
-// NewAppModel создает новую модель приложения со значениями по умолчанию
+// --- Инициализация ---
+
 func NewAppModel() *AppModel {
 	urlInput := textinput.New()
 	urlInput.Placeholder = "https://api.example.com/endpoint"
 	urlInput.CharLimit = 500
 
 	bodyInput := textarea.New()
-	bodyInput.Placeholder = "{\n  \"key\": \"value\"\n}"
+	bodyInput.Placeholder = "{\"key\": \"value\"}"
 	bodyInput.ShowLineNumbers = false
-	// Убираем подсветку активной строки в поле Body
 	bodyInput.FocusedStyle.CursorLine = lipgloss.NewStyle()
 
 	responseVP := viewport.New(10, 10)
@@ -122,22 +147,123 @@ func NewAppModel() *AppModel {
 	headerInput.Placeholder = "Content-Type=application/json"
 	headerInput.CharLimit = 100
 
-	return &AppModel{
+	saveNameInput := textinput.New()
+	saveNameInput.Placeholder = "My Awesome Request"
+	saveNameInput.CharLimit = 100
+
+	savedList := list.New([]list.Item{}, list.NewDefaultDelegate(), 0, 0)
+	savedList.Title = "Сохраненные запросы"
+	savedList.SetShowStatusBar(false)
+
+	configPath, _ := getConfigPath()
+
+	m := &AppModel{
 		urlInput:       urlInput,
 		bodyInput:      bodyInput,
 		responseVP:     responseVP,
 		paramInput:     paramInput,
 		headerInput:    headerInput,
+		savedList:      savedList,
+		saveNameInput:  saveNameInput,
 		params:         []Param{},
-		headers:        []Header{},
+		headers:        []Header{{Key: "Content-Type", Value: "application/json"}},
+		configPath:     configPath,
 		activeTab:      TabRequest,
 		activeSection:  SectionMethod,
 		selectedMethod: MethodGET,
-		inputMode:      false,
+	}
+
+	m.loadRequests()
+	return m
+}
+
+// --- Логика Сохранения/Загрузки ---
+
+func getConfigPath() (string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	postuiDir := filepath.Join(configDir, "postui")
+	if err := os.MkdirAll(postuiDir, 0750); err != nil {
+		return "", err
+	}
+	return filepath.Join(postuiDir, "requests.json"), nil
+}
+
+func (m *AppModel) loadRequests() error {
+	data, err := ioutil.ReadFile(m.configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	var savedRequests []SavedRequest
+	if err := json.Unmarshal(data, &savedRequests); err != nil {
+		return err
+	}
+
+	items := make([]list.Item, len(savedRequests))
+	for i, sr := range savedRequests {
+		items[i] = sr
+	}
+
+	m.savedRequests = items
+	m.savedList.SetItems(m.savedRequests)
+	return nil
+}
+
+func (m *AppModel) saveRequests() error {
+	savedRequests := make([]SavedRequest, len(m.savedRequests))
+	for i, item := range m.savedRequests {
+		savedRequests[i] = item.(SavedRequest)
+	}
+
+	data, err := json.MarshalIndent(savedRequests, "", "  ")
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile(m.configPath, data, 0644)
+}
+
+func (m *AppModel) AddNewSavedRequest(name string) {
+	newReq := SavedRequest{
+		Name:    name,
+		Method:  m.selectedMethod,
+		URL:     m.urlInput.Value(),
+		Body:    m.bodyInput.Value(),
+		Headers: m.headers,
+		Params:  m.params,
+	}
+	m.savedRequests = append(m.savedRequests, newReq)
+	m.savedList.SetItems(m.savedRequests)
+	m.saveRequests()
+}
+
+func (m *AppModel) LoadRequestFromSaved() {
+	if item, ok := m.savedList.SelectedItem().(SavedRequest); ok {
+		m.selectedMethod = item.Method
+		m.urlInput.SetValue(item.URL)
+		m.bodyInput.SetValue(item.Body)
+		m.headers = item.Headers
+		m.params = item.Params
+		m.activeTab = TabRequest
 	}
 }
 
-// UpdateDimensions обновляет размеры окна для нового вкладочного интерфейса
+func (m *AppModel) DeleteSelectedRequest() {
+	if len(m.savedRequests) > 0 {
+		idx := m.savedList.Index()
+		m.savedRequests = append(m.savedRequests[:idx], m.savedRequests[idx+1:]...)
+		m.savedList.SetItems(m.savedRequests)
+		m.saveRequests()
+	}
+}
+
+// --- Обновление состояния ---
+
 func (m *AppModel) UpdateDimensions(width, height int) {
 	m.width = width
 	m.height = height
@@ -151,11 +277,13 @@ func (m *AppModel) UpdateDimensions(width, height int) {
 
 	m.responseVP.Width = contentWidth
 	m.responseVP.Height = contentHeight
+	m.savedList.SetSize(contentWidth, contentHeight)
 
 	m.urlInput.Width = contentWidth - 14
 	m.paramInput.Width = contentWidth - 14
 	m.headerInput.Width = contentWidth - 14
-	m.bodyInput.SetWidth(contentWidth - 14)
+	m.bodyInput.SetWidth(contentWidth - 14 - 2)
+	m.saveNameInput.Width = contentWidth - 20
 
 	occupiedHeight := len(m.headers) + len(m.params) + 17
 	bodyHeight := contentHeight - occupiedHeight
@@ -165,36 +293,6 @@ func (m *AppModel) UpdateDimensions(width, height int) {
 	m.bodyInput.SetHeight(bodyHeight)
 }
 
-// GetCurrentMethod возвращает выбранный HTTP метод в виде строки
-func (m *AppModel) GetCurrentMethod() string {
-	return MethodNames[m.selectedMethod]
-}
-
-// AddParam добавляет новый параметр запроса
-func (m *AppModel) AddParam(key, value string) {
-	m.params = append(m.params, Param{Key: key, Value: value})
-}
-
-// RemoveLastParam удаляет последний добавленный параметр
-func (m *AppModel) RemoveLastParam() {
-	if len(m.params) > 0 {
-		m.params = m.params[:len(m.params)-1]
-	}
-}
-
-// AddHeader добавляет новый HTTP заголовок
-func (m *AppModel) AddHeader(key, value string) {
-	m.headers = append(m.headers, Header{Key: key, Value: value})
-}
-
-// RemoveLastHeader удаляет последний добавленный заголовок
-func (m *AppModel) RemoveLastHeader() {
-	if len(m.headers) > 0 {
-		m.headers = m.headers[:len(m.headers)-1]
-	}
-}
-
-// SetResponseData обновляет данные ответа и переключает на вкладку ответа
 func (m *AppModel) SetResponseData(data ResponseData) {
 	m.loading = false
 	m.response = FormatJSON(data.Body)
@@ -202,10 +300,9 @@ func (m *AppModel) SetResponseData(data ResponseData) {
 	m.responseTime = data.Time
 	m.responseVP.SetContent(m.response)
 	m.errorMsg = ""
-	m.activeTab = TabResponse // Автоматически переключаемся на вкладку ответа
+	m.activeTab = TabResponse
 }
 
-// SetError обновляет состояние ошибки и переключает на вкладку ответа
 func (m *AppModel) SetError(err ErrorData) {
 	m.loading = false
 	m.errorMsg = err.Message
@@ -213,15 +310,36 @@ func (m *AppModel) SetError(err ErrorData) {
 	m.status = "Error"
 	m.responseTime = ""
 	m.responseVP.SetContent(err.Message)
-	m.activeTab = TabResponse // Автоматически переключаемся на вкладку ответа
+	m.activeTab = TabResponse
 }
 
-// SetLoading устанавливает состояние загрузки
+func (m *AppModel) GetCurrentMethod() string {
+	return MethodNames[m.selectedMethod]
+}
+
+func (m *AppModel) AddParam(key, value string) {
+	m.params = append(m.params, Param{Key: key, Value: value})
+}
+
+func (m *AppModel) RemoveLastParam() {
+	if len(m.params) > 0 {
+		m.params = m.params[:len(m.params)-1]
+	}
+}
+
+func (m *AppModel) AddHeader(key, value string) {
+	m.headers = append(m.headers, Header{Key: key, Value: value})
+}
+
+func (m *AppModel) RemoveLastHeader() {
+	if len(m.headers) > 0 {
+		m.headers = m.headers[:len(m.headers)-1]
+	}
+}
+
 func (m *AppModel) SetLoading(loading bool) {
 	m.loading = loading
 }
-
-// Геттеры и Сеттеры
 
 func (m *AppModel) GetActiveTab() Tab {
 	return m.activeTab
@@ -267,6 +385,14 @@ func (m *AppModel) GetHeaderInput() *textinput.Model {
 	return &m.headerInput
 }
 
+func (m *AppModel) GetSavedList() *list.Model {
+	return &m.savedList
+}
+
+func (m *AppModel) GetSaveNameInput() *textinput.Model {
+	return &m.saveNameInput
+}
+
 func (m *AppModel) GetActiveSection() Section {
 	return m.activeSection
 }
@@ -289,6 +415,22 @@ func (m *AppModel) GetInputMode() bool {
 
 func (m *AppModel) SetInputMode(mode bool) {
 	m.inputMode = mode
+}
+
+func (m *AppModel) IsSaving() bool {
+	return m.isSaving
+}
+
+func (m *AppModel) SetIsSaving(saving bool) {
+	m.isSaving = saving
+}
+
+func (m *AppModel) IsDeleting() bool {
+	return m.isDeleting
+}
+
+func (m *AppModel) SetIsDeleting(deleting bool) {
+	m.isDeleting = deleting
 }
 
 func (m *AppModel) GetLoading() bool {
