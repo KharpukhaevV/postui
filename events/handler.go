@@ -20,8 +20,8 @@ func NewEventHandler() *EventHandler {
 	}
 }
 
-// HandleKeyEvent обрабатывает события клавиш и возвращает соответствующие команды
-func (h *EventHandler) HandleKeyEvent(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd) {
+// HandleKeyEvent обрабатывает события клавиш и возвращает флаг, если событие было "съедено"
+func (h *EventHandler) HandleKeyEvent(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd, bool) {
 	if !model.GetInputMode() {
 		return h.handleNavigationMode(model, msg)
 	}
@@ -29,122 +29,140 @@ func (h *EventHandler) HandleKeyEvent(model *models.AppModel, msg tea.KeyMsg) (*
 }
 
 // handleNavigationMode обрабатывает события клавиш в режиме навигации
-func (h *EventHandler) handleNavigationMode(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd) {
+func (h *EventHandler) handleNavigationMode(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd, bool) {
 	switch msg.String() {
 	case "ctrl+c", "q":
-		return model, tea.Quit
+		return model, tea.Quit, true
 	case "i", "a":
 		model.SetInputMode(true)
 		h.updateFocus(model)
-		return model, nil
+		return model, nil, true // Ключ обработан, не передавать дальше
+
+	// Переключение вкладок и методов
+	case "left", "h":
+		if model.GetActiveTab() == models.TabRequest && model.GetActiveSection() == models.SectionMethod {
+			model.SetSelectedMethod(models.HTTPMethod((int(model.GetSelectedMethod()) - 1 + len(models.MethodNames)) % len(models.MethodNames)))
+		} else {
+			model.SetActiveTab(models.TabRequest)
+		}
+		return model, nil, true
+	case "right", "l":
+		if model.GetActiveTab() == models.TabRequest && model.GetActiveSection() == models.SectionMethod {
+			model.SetSelectedMethod(models.HTTPMethod((int(model.GetSelectedMethod()) + 1) % len(models.MethodNames)))
+		} else {
+			model.SetActiveTab(models.TabResponse)
+		}
+		return model, nil, true
+
+	// Навигация по секциям на вкладке "Запрос"
+	case "k": // Вверх
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.Section((int(model.GetActiveSection()) + 4) % 5))
+			h.updateFocus(model)
+		}
+		return model, nil, true
+	case "j": // Вниз
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.Section((int(model.GetActiveSection()) + 1) % 5))
+			h.updateFocus(model)
+		}
+		return model, nil, true
 	case "tab":
-		model.SetActiveSection(models.Section((int(model.GetActiveSection()) + 1) % 6))
-		h.updateFocus(model)
-		return model, nil
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.Section((int(model.GetActiveSection()) + 1) % 5))
+			h.updateFocus(model)
+		}
+		return model, nil, true
 	case "shift+tab":
-		model.SetActiveSection(models.Section((int(model.GetActiveSection()) + 5) % 6))
-		h.updateFocus(model)
-		return model, nil
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.Section((int(model.GetActiveSection()) + 4) % 5))
+			h.updateFocus(model)
+		}
+		return model, nil, true
 	case "1":
-		model.SetActiveSection(models.SectionMethod)
-		h.updateFocus(model)
-		return model, nil
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.SectionMethod)
+			h.updateFocus(model)
+		}
+		return model, nil, true
 	case "2":
-		model.SetActiveSection(models.SectionURL)
-		h.updateFocus(model)
-		return model, nil
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.SectionURL)
+			h.updateFocus(model)
+		}
+		return model, nil, true
 	case "3":
-		model.SetActiveSection(models.SectionHeaders)
-		h.updateFocus(model)
-		return model, nil
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.SectionHeaders)
+			h.updateFocus(model)
+		}
+		return model, nil, true
 	case "4":
-		model.SetActiveSection(models.SectionBody)
-		h.updateFocus(model)
-		return model, nil
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.SectionBody)
+			h.updateFocus(model)
+		}
+		return model, nil, true
 	case "5":
-		model.SetActiveSection(models.SectionParams)
-		h.updateFocus(model)
-		return model, nil
-	case "6":
-		model.SetActiveSection(models.SectionResponse)
-		h.updateFocus(model)
-		return model, nil
-	case "up", "k":
-		if model.GetActiveSection() == models.SectionResponse {
+		if model.GetActiveTab() == models.TabRequest {
+			model.SetActiveSection(models.SectionParams)
+			h.updateFocus(model)
+		}
+		return model, nil, true
+
+	// Прокрутка на вкладке "Ответ"
+	case "up":
+		if model.GetActiveTab() == models.TabResponse {
 			model.GetResponseVP().LineUp(1)
 		}
-		return model, nil
-	case "down", "j":
-		if model.GetActiveSection() == models.SectionResponse {
+		return model, nil, true
+	case "down":
+		if model.GetActiveTab() == models.TabResponse {
 			model.GetResponseVP().LineDown(1)
 		}
-		return model, nil
+		return model, nil, true
 	case "pageup":
-		if model.GetActiveSection() == models.SectionResponse {
+		if model.GetActiveTab() == models.TabResponse {
 			model.GetResponseVP().PageUp()
 		}
-		return model, nil
+		return model, nil, true
 	case "pagedown":
-		if model.GetActiveSection() == models.SectionResponse {
+		if model.GetActiveTab() == models.TabResponse {
 			model.GetResponseVP().PageDown()
 		}
-		return model, nil
-	case "left", "h":
-		if model.GetActiveSection() == models.SectionMethod {
-			model.SetSelectedMethod(models.HTTPMethod((int(model.GetSelectedMethod()) - 1 + len(models.MethodNames)) % len(models.MethodNames)))
-		}
-		return model, nil
-	case "right", "l":
-		if model.GetActiveSection() == models.SectionMethod {
-			model.SetSelectedMethod(models.HTTPMethod((int(model.GetSelectedMethod()) + 1) % len(models.MethodNames)))
-		}
-		return model, nil
+		return model, nil, true
+
 	case "enter":
-		return h.handleEnterKey(model)
+		model, cmd := h.handleEnterKey(model)
+		return model, cmd, true
 	case "backspace":
-		return h.handleBackspaceKey(model)
+		model, cmd := h.handleBackspaceKey(model)
+		return model, cmd, true
 	}
-	return model, nil
+	return model, nil, false // Ключ не обработан
 }
 
 // handleInputMode обрабатывает события клавиш в режиме ввода
-func (h *EventHandler) handleInputMode(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd) {
+func (h *EventHandler) handleInputMode(model *models.AppModel, msg tea.KeyMsg) (*models.AppModel, tea.Cmd, bool) {
 	switch msg.String() {
 	case "esc":
 		model.SetInputMode(false)
 		h.updateFocus(model)
-		return model, nil
+		return model, nil, true // Ключ обработан
 	case "ctrl+c", "q":
 		if model.GetActiveSection() != models.SectionBody {
-			return model, tea.Quit
-		}
-		return model, nil
-	case "up", "k":
-		if model.GetActiveSection() == models.SectionResponse {
-			model.GetResponseVP().LineUp(1)
-			return model, nil
-		}
-	case "down", "j":
-		if model.GetActiveSection() == models.SectionResponse {
-			model.GetResponseVP().LineDown(1)
-			return model, nil
-		}
-	case "pageup":
-		if model.GetActiveSection() == models.SectionResponse {
-			model.GetResponseVP().PageUp()
-			return model, nil
-		}
-	case "pagedown":
-		if model.GetActiveSection() == models.SectionResponse {
-			model.GetResponseVP().PageDown()
-			return model, nil
+			return model, tea.Quit, true
 		}
 	}
-	return model, nil
+	return model, nil, false // Ключ не обработан, передать компоненту
 }
 
 // handleEnterKey обрабатывает клавишу Enter в зависимости от активной секции
 func (h *EventHandler) handleEnterKey(model *models.AppModel) (*models.AppModel, tea.Cmd) {
+	if model.GetActiveTab() != models.TabRequest {
+		return model, nil
+	}
+
 	switch model.GetActiveSection() {
 	case models.SectionHeaders:
 		if model.GetHeaderInput().Value() != "" {
@@ -175,6 +193,9 @@ func (h *EventHandler) handleEnterKey(model *models.AppModel) (*models.AppModel,
 
 // handleBackspaceKey обрабатывает клавишу Backspace в зависимости от активной секции
 func (h *EventHandler) handleBackspaceKey(model *models.AppModel) (*models.AppModel, tea.Cmd) {
+	if model.GetActiveTab() != models.TabRequest {
+		return model, nil
+	}
 	switch model.GetActiveSection() {
 	case models.SectionHeaders:
 		if len(model.GetHeaders()) > 0 && model.GetHeaderInput().Value() == "" {
@@ -207,7 +228,7 @@ func (h *EventHandler) updateFocus(model *models.AppModel) {
 	model.GetBodyInput().Blur()
 	model.GetParamInput().Blur()
 
-	if model.GetInputMode() {
+	if model.GetInputMode() && model.GetActiveTab() == models.TabRequest {
 		switch model.GetActiveSection() {
 		case models.SectionURL:
 			model.GetURLInput().Focus()
@@ -226,7 +247,7 @@ func (h *EventHandler) UpdateComponents(model *models.AppModel, msg tea.Msg) (*m
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
 
-	if model.GetInputMode() {
+	if model.GetActiveTab() == models.TabRequest && model.GetInputMode() {
 		switch model.GetActiveSection() {
 		case models.SectionURL:
 			*model.GetURLInput(), cmd = model.GetURLInput().Update(msg)
@@ -240,15 +261,11 @@ func (h *EventHandler) UpdateComponents(model *models.AppModel, msg tea.Msg) (*m
 		case models.SectionParams:
 			*model.GetParamInput(), cmd = model.GetParamInput().Update(msg)
 			cmds = append(cmds, cmd)
-		case models.SectionResponse:
-			*model.GetResponseVP(), cmd = model.GetResponseVP().Update(msg)
-			cmds = append(cmds, cmd)
 		}
-	} else {
-		if model.GetActiveSection() == models.SectionResponse {
-			*model.GetResponseVP(), cmd = model.GetResponseVP().Update(msg)
-			cmds = append(cmds, cmd)
-		}
+	} else if model.GetActiveTab() == models.TabResponse {
+		// Всегда позволяем прокрутку на вкладке ответа
+		*model.GetResponseVP(), cmd = model.GetResponseVP().Update(msg)
+		cmds = append(cmds, cmd)
 	}
 
 	return model, tea.Batch(cmds...)

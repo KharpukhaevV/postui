@@ -8,6 +8,15 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// Tab представляет активную вкладку в интерфейсе
+type Tab int
+
+const (
+	TabRequest Tab = iota
+	TabResponse
 )
 
 // Section представляет различные секции интерфейса
@@ -19,7 +28,6 @@ const (
 	SectionHeaders
 	SectionBody
 	SectionParams
-	SectionResponse
 )
 
 // HTTPMethod представляет доступные HTTP методы
@@ -77,6 +85,7 @@ type AppModel struct {
 	headers []Header
 
 	// Состояние
+	activeTab      Tab
 	activeSection  Section
 	selectedMethod HTTPMethod
 	loading        bool
@@ -99,11 +108,11 @@ func NewAppModel() *AppModel {
 
 	bodyInput := textarea.New()
 	bodyInput.Placeholder = "{\n  \"key\": \"value\"\n}"
-	bodyInput.SetWidth(50)
-	bodyInput.SetHeight(13)
 	bodyInput.ShowLineNumbers = false
+	// Убираем подсветку активной строки в поле Body
+	bodyInput.FocusedStyle.CursorLine = lipgloss.NewStyle()
 
-	responseVP := viewport.New(50, 15)
+	responseVP := viewport.New(10, 10)
 
 	paramInput := textinput.New()
 	paramInput.Placeholder = "key=value"
@@ -121,10 +130,39 @@ func NewAppModel() *AppModel {
 		headerInput:    headerInput,
 		params:         []Param{},
 		headers:        []Header{},
+		activeTab:      TabRequest,
 		activeSection:  SectionMethod,
 		selectedMethod: MethodGET,
 		inputMode:      false,
 	}
+}
+
+// UpdateDimensions обновляет размеры окна для нового вкладочного интерфейса
+func (m *AppModel) UpdateDimensions(width, height int) {
+	m.width = width
+	m.height = height
+
+	contentHeight := height - 5
+	if contentHeight < 10 {
+		contentHeight = 10
+	}
+
+	contentWidth := width - 4
+
+	m.responseVP.Width = contentWidth
+	m.responseVP.Height = contentHeight
+
+	m.urlInput.Width = contentWidth - 14
+	m.paramInput.Width = contentWidth - 14
+	m.headerInput.Width = contentWidth - 14
+	m.bodyInput.SetWidth(contentWidth - 14)
+
+	occupiedHeight := len(m.headers) + len(m.params) + 17
+	bodyHeight := contentHeight - occupiedHeight
+	if bodyHeight < 3 {
+		bodyHeight = 3
+	}
+	m.bodyInput.SetHeight(bodyHeight)
 }
 
 // GetCurrentMethod возвращает выбранный HTTP метод в виде строки
@@ -156,7 +194,7 @@ func (m *AppModel) RemoveLastHeader() {
 	}
 }
 
-// SetResponseData обновляет данные ответа и содержимое viewport
+// SetResponseData обновляет данные ответа и переключает на вкладку ответа
 func (m *AppModel) SetResponseData(data ResponseData) {
 	m.loading = false
 	m.response = FormatJSON(data.Body)
@@ -164,16 +202,18 @@ func (m *AppModel) SetResponseData(data ResponseData) {
 	m.responseTime = data.Time
 	m.responseVP.SetContent(m.response)
 	m.errorMsg = ""
+	m.activeTab = TabResponse // Автоматически переключаемся на вкладку ответа
 }
 
-// SetError обновляет состояние ошибки
+// SetError обновляет состояние ошибки и переключает на вкладку ответа
 func (m *AppModel) SetError(err ErrorData) {
 	m.loading = false
 	m.errorMsg = err.Message
 	m.response = ""
 	m.status = "Error"
 	m.responseTime = ""
-	m.responseVP.SetContent("")
+	m.responseVP.SetContent(err.Message)
+	m.activeTab = TabResponse // Автоматически переключаемся на вкладку ответа
 }
 
 // SetLoading устанавливает состояние загрузки
@@ -181,132 +221,96 @@ func (m *AppModel) SetLoading(loading bool) {
 	m.loading = loading
 }
 
-// UpdateDimensions обновляет размеры окна и настраивает размеры компонентов
-func (m *AppModel) UpdateDimensions(width, height int) {
-	m.width = width
-	m.height = height
+// Геттеры и Сеттеры
 
-	leftWidth := (width - 4) * 2 / 3
-	m.responseVP.Width = width - leftWidth - 6
-
-	responseHeight := 15
-	if height > 30 {
-		responseHeight = height / 3
-		if responseHeight > 20 {
-			responseHeight = 20
-		}
-	}
-	m.responseVP.Height = responseHeight
-
-	m.urlInput.Width = leftWidth - 4
-	m.bodyInput.SetWidth(leftWidth - 4)
-	m.paramInput.Width = leftWidth - 4
-	m.headerInput.Width = leftWidth - 4
+func (m *AppModel) GetActiveTab() Tab {
+	return m.activeTab
 }
 
-// Геттеры для доступа к приватным полям
+func (m *AppModel) SetActiveTab(tab Tab) {
+	m.activeTab = tab
+}
 
-// URLInputValue возвращает значение URL поля ввода
 func (m *AppModel) URLInputValue() string {
 	return m.urlInput.Value()
 }
 
-// BodyInputValue возвращает значение поля ввода тела запроса
 func (m *AppModel) BodyInputValue() string {
 	return m.bodyInput.Value()
 }
 
-// GetHeaders возвращает список заголовков
 func (m *AppModel) GetHeaders() []Header {
 	return m.headers
 }
 
-// GetParams возвращает список параметров
 func (m *AppModel) GetParams() []Param {
 	return m.params
 }
 
-// GetResponseVP возвращает viewport для ответа
 func (m *AppModel) GetResponseVP() *viewport.Model {
 	return &m.responseVP
 }
 
-// GetURLInput возвращает поле ввода URL
 func (m *AppModel) GetURLInput() *textinput.Model {
 	return &m.urlInput
 }
 
-// GetBodyInput возвращает поле ввода тела запроса
 func (m *AppModel) GetBodyInput() *textarea.Model {
 	return &m.bodyInput
 }
 
-// GetParamInput возвращает поле ввода параметров
 func (m *AppModel) GetParamInput() *textinput.Model {
 	return &m.paramInput
 }
 
-// GetHeaderInput возвращает поле ввода заголовков
 func (m *AppModel) GetHeaderInput() *textinput.Model {
 	return &m.headerInput
 }
 
-// GetActiveSection возвращает активную секцию
 func (m *AppModel) GetActiveSection() Section {
 	return m.activeSection
 }
 
-// SetActiveSection устанавливает активную секцию
 func (m *AppModel) SetActiveSection(section Section) {
 	m.activeSection = section
 }
 
-// GetSelectedMethod возвращает выбранный метод
 func (m *AppModel) GetSelectedMethod() HTTPMethod {
 	return m.selectedMethod
 }
 
-// SetSelectedMethod устанавливает выбранный метод
 func (m *AppModel) SetSelectedMethod(method HTTPMethod) {
 	m.selectedMethod = method
 }
 
-// GetInputMode возвращает режим ввода
 func (m *AppModel) GetInputMode() bool {
 	return m.inputMode
 }
 
-// SetInputMode устанавливает режим ввода
 func (m *AppModel) SetInputMode(mode bool) {
 	m.inputMode = mode
 }
 
-// GetLoading возвращает состояние загрузки
 func (m *AppModel) GetLoading() bool {
 	return m.loading
 }
 
-// GetResponse возвращает ответ
 func (m *AppModel) GetResponse() string {
 	return m.response
 }
 
-// GetStatus возвращает статус
 func (m *AppModel) GetStatus() string {
 	return m.status
 }
 
-// GetResponseTime возвращает время ответа
 func (m *AppModel) GetResponseTime() string {
 	return m.responseTime
 }
 
-// GetErrorMsg возвращает сообщение об ошибке
 func (m *AppModel) GetErrorMsg() string {
 	return m.errorMsg
 }
 
-// GetDimensions возвращает размеры окна
 func (m *AppModel) GetDimensions() (int, int) {
 	return m.width, m.height
 }
@@ -317,11 +321,9 @@ func FormatJSON(input string) string {
 		return ""
 	}
 
-	// Пытаемся отформатировать как JSON
 	var formatted bytes.Buffer
 	err := json.Indent(&formatted, []byte(input), "", "  ")
 	if err != nil {
-		// Если не JSON, возвращаем как есть
 		return input
 	}
 	return formatted.String()

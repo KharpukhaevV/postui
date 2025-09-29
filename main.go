@@ -40,19 +40,26 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.model.UpdateDimensions(msg.Width, msg.Height)
 
 	case tea.KeyMsg:
-		a.model, cmd = a.eventHandler.HandleKeyEvent(a.model, msg)
+		var handled bool
+		a.model, cmd, handled = a.eventHandler.HandleKeyEvent(a.model, msg)
 		cmds = append(cmds, cmd)
+		// Если ключ не был обработан навигацией, передаем его компонентам
+		if !handled {
+			a.model, cmd = a.eventHandler.UpdateComponents(a.model, msg)
+			cmds = append(cmds, cmd)
+		}
 
 	case models.ResponseData:
 		a.model.SetResponseData(msg)
 
 	case models.ErrorData:
 		a.model.SetError(msg)
-	}
 
-	// Обновляем компоненты ввода
-	a.model, cmd = a.eventHandler.UpdateComponents(a.model, msg)
-	cmds = append(cmds, cmd)
+	default:
+		// Все остальные сообщения передаем компонентам
+		a.model, cmd = a.eventHandler.UpdateComponents(a.model, msg)
+		cmds = append(cmds, cmd)
+	}
 
 	return a, tea.Batch(cmds...)
 }

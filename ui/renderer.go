@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/KharpukhaevV/postui/models"
 	"github.com/charmbracelet/lipgloss"
@@ -25,66 +26,123 @@ type UIStyles struct {
 	activeSectionStyle  lipgloss.Style
 	methodStyle         lipgloss.Style
 	selectedMethodStyle lipgloss.Style
+	tabStyle            lipgloss.Style
+	activeTabStyle      lipgloss.Style
+	helpTextStyle       lipgloss.Style
 }
 
 // NewUIRenderer создает новый рендерер интерфейса со стилями по умолчанию
 func NewUIRenderer() *UIRenderer {
+	activeColor := lipgloss.Color("205")
+
 	return &UIRenderer{
 		styles: &UIStyles{
-			docStyle:            lipgloss.NewStyle().Margin(1, 2),
+			docStyle:            lipgloss.NewStyle().Padding(1, 2),
 			titleStyle:          lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("63")),
 			labelStyle:          lipgloss.NewStyle().Bold(true).Width(12).MarginRight(1),
 			inputStyle:          lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).Padding(0, 1),
-			activeInputStyle:    lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).Padding(0, 1).BorderForeground(lipgloss.Color("205")),
+			activeInputStyle:    lipgloss.NewStyle().BorderStyle(lipgloss.RoundedBorder()).Padding(0, 1).BorderForeground(activeColor),
 			errorStyle:          lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true),
 			successStyle:        lipgloss.NewStyle().Foreground(lipgloss.Color("82")).Bold(true),
 			sectionStyle:        lipgloss.NewStyle().Margin(0, 0, 1, 0),
-			activeSectionStyle:  lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true),
+			activeSectionStyle:  lipgloss.NewStyle().Foreground(activeColor).Bold(true),
 			methodStyle:         lipgloss.NewStyle().Padding(0, 1).Margin(0, 1),
-			selectedMethodStyle: lipgloss.NewStyle().Padding(0, 1).Margin(0, 1).Foreground(lipgloss.Color("205")).Bold(true).Underline(true),
+			selectedMethodStyle: lipgloss.NewStyle().Padding(0, 1).Margin(0, 1).Foreground(activeColor).Bold(true).Underline(true),
+			tabStyle:            lipgloss.NewStyle().Padding(0, 2).Foreground(lipgloss.Color("240")),
+			activeTabStyle:      lipgloss.NewStyle().Padding(0, 2).Bold(true).Underline(true).Foreground(activeColor),
+			helpTextStyle:       lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		},
 	}
 }
 
 // Render рендерит полный интерфейс
 func (r *UIRenderer) Render(model *models.AppModel) string {
-	// Получаем размеры из модели (нужно добавить геттеры)
-	width, height := model.GetDimensions()
-	if width == 0 || height == 0 {
+	width, _ := model.GetDimensions()
+	if width == 0 {
 		return "Инициализация..."
 	}
 
-	leftWidth := (width - 4) * 2 / 3
-	leftColumn := lipgloss.NewStyle().Width(leftWidth).Height(height - 4)
-	rightColumn := lipgloss.NewStyle().Width(width - leftWidth - 6).Height(height - 4)
+	var currentView string
+	switch model.GetActiveTab() {
+	case models.TabRequest:
+		currentView = r.renderRequestView(model)
+	case models.TabResponse:
+		currentView = r.renderResponseView(model)
+	}
 
-	leftContent := r.renderLeftColumn(model, leftWidth)
-	rightContent := r.renderRightColumn(model, rightColumn.GetWidth())
+	header := r.renderHeader(model)
+	footer := r.renderFooter(model)
 
-	mainLayout := lipgloss.JoinHorizontal(lipgloss.Top,
-		leftColumn.Render(leftContent),
-		lipgloss.NewStyle().Width(2).Render(""),
-		rightColumn.Render(rightContent),
+	// Собираем финальный вид
+	finalView := lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		"", // Отступ
+		currentView,
+		footer,
 	)
 
-	return r.styles.docStyle.Render(
-		lipgloss.JoinVertical(lipgloss.Left,
-			r.styles.titleStyle.Render("REST Client TUI"),
-			"",
-			mainLayout,
-			"\nНажмите 1-6 для переключения секций, TAB/SHIFT+TAB для навигации, ENTER для отправки запроса, ↑↓/PageUp/PageDown для прокрутки ответа, q для выхода",
-		),
-	)
+	return r.styles.docStyle.Render(finalView)
 }
 
-// renderLeftColumn рендерит левую колонку с конфигурацией запроса
-func (r *UIRenderer) renderLeftColumn(model *models.AppModel, leftWidth int) string {
+// renderHeader рендерит заголовок и вкладки на одной строке
+func (r *UIRenderer) renderHeader(model *models.AppModel) string {
+	width, _ := model.GetDimensions()
+	title := r.styles.titleStyle.Render("REST Client TUI")
+	tabs := r.renderTabs(model)
+
+	spacerWidth := width - lipgloss.Width(title) - lipgloss.Width(tabs) - r.styles.docStyle.GetHorizontalFrameSize()
+	if spacerWidth < 0 {
+		spacerWidth = 0
+	}
+	spacer := lipgloss.NewStyle().Width(spacerWidth).Render("")
+
+	return lipgloss.JoinHorizontal(lipgloss.Left, title, spacer, tabs)
+}
+
+// renderFooter рендерит нижнюю часть интерфейса (статус и подсказки)
+func (r *UIRenderer) renderFooter(model *models.AppModel) string {
+	if model.GetLoading() {
+		return "⏳ Отправка запроса..."
+	}
+	if model.GetErrorMsg() != "" {
+		return r.styles.errorStyle.Render("Ошибка: " + model.GetErrorMsg())
+	}
+	if model.GetStatus() != "" {
+		successMsg := r.styles.successStyle.Render("✓ Запрос выполнен")
+		statusInfo := lipgloss.JoinHorizontal(lipgloss.Top,
+			r.styles.labelStyle.Render("Статус:"),
+			lipgloss.NewStyle().Width(20).Render(model.GetStatus()),
+			r.styles.labelStyle.Render("Время:"),
+			lipgloss.NewStyle().Width(15).Render(model.GetResponseTime()),
+		)
+		return lipgloss.JoinHorizontal(lipgloss.Left, successMsg, "  ", statusInfo)
+	}
+
+	// В обычном состоянии показываем подсказку
+	return r.styles.helpTextStyle.Render("←/h/l/→: навигация | j/k/tab: секции | i: ввод | enter: отправить | q: выход")
+}
+
+// renderTabs рендерит панель вкладок
+func (r *UIRenderer) renderTabs(model *models.AppModel) string {
+	requestTab := r.styles.tabStyle.Render("Запрос")
+	responseTab := r.styles.tabStyle.Render("Ответ")
+
+	if model.GetActiveTab() == models.TabRequest {
+		requestTab = r.styles.activeTabStyle.Render("Запрос")
+	} else {
+		responseTab = r.styles.activeTabStyle.Render("Ответ")
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Left, requestTab, responseTab)
+}
+
+// renderRequestView рендерит содержимое вкладки "Запрос"
+func (r *UIRenderer) renderRequestView(model *models.AppModel) string {
 	methodSection := r.renderMethodSection(model)
-	urlSection := r.renderURLSection(model, leftWidth)
-	headersSection := r.renderHeadersSection(model, leftWidth)
-	bodySection := r.renderBodySection(model, leftWidth)
-	paramsSection := r.renderParamsSection(model, leftWidth)
-	statusMessage := r.renderStatusMessage(model)
+	urlSection := r.renderURLSection(model)
+	headersSection := r.renderHeadersSection(model)
+	bodySection := r.renderBodySection(model)
+	paramsSection := r.renderParamsSection(model)
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		r.styles.sectionStyle.Render(methodSection),
@@ -92,22 +150,16 @@ func (r *UIRenderer) renderLeftColumn(model *models.AppModel, leftWidth int) str
 		r.styles.sectionStyle.Render(headersSection),
 		r.styles.sectionStyle.Render(bodySection),
 		r.styles.sectionStyle.Render(paramsSection),
-		statusMessage,
 	)
 }
 
-// renderRightColumn рендерит правую колонку с ответом
-func (r *UIRenderer) renderRightColumn(model *models.AppModel, rightWidth int) string {
-	responseSection := r.renderResponseSection(model, rightWidth)
-	statusInfo := r.renderStatusInfo(model)
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		responseSection,
-		statusInfo,
-	)
+// renderResponseView рендерит содержимое вкладки "Ответ"
+func (r *UIRenderer) renderResponseView(model *models.AppModel) string {
+	return model.GetResponseVP().View()
 }
 
-// renderMethodSection рендерит выбор HTTP метода
+// --- Рендеринг секций для вкладки "Запрос" ---
+
 func (r *UIRenderer) renderMethodSection(model *models.AppModel) string {
 	label := "[1] Метод:"
 	if model.GetActiveSection() == models.SectionMethod {
@@ -130,135 +182,88 @@ func (r *UIRenderer) renderMethodSection(model *models.AppModel) string {
 	)
 }
 
-// renderURLSection рендерит секцию ввода URL
-func (r *UIRenderer) renderURLSection(model *models.AppModel, leftWidth int) string {
+func (r *UIRenderer) renderURLSection(model *models.AppModel) string {
 	label := "[2] URL:"
 	if model.GetActiveSection() == models.SectionURL {
 		label = r.styles.activeSectionStyle.Render("[2] URL:")
 	}
 
-	input := model.GetURLInput().View()
+	input := model.GetURLInput()
+	view := input.View()
+	style := r.styles.inputStyle.Width(input.Width)
 	if model.GetActiveSection() == models.SectionURL && model.GetInputMode() {
-		input = r.styles.activeInputStyle.Width(leftWidth - 4).Render(input)
-	} else {
-		input = r.styles.inputStyle.Width(leftWidth - 4).Render(input)
+		style = r.styles.activeInputStyle.Width(input.Width)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Top,
+	return lipgloss.JoinHorizontal(lipgloss.Top,
 		r.styles.labelStyle.Render(label),
-		input,
+		style.Render(view),
 	)
 }
 
-// renderHeadersSection рендерит секцию заголовков
-func (r *UIRenderer) renderHeadersSection(model *models.AppModel, leftWidth int) string {
+func (r *UIRenderer) renderHeadersSection(model *models.AppModel) string {
 	label := "[3] Заголовки:"
 	if model.GetActiveSection() == models.SectionHeaders {
 		label = r.styles.activeSectionStyle.Render("[3] Заголовки:")
 	}
 
-	headersText := ""
+	var sb strings.Builder
 	for _, h := range model.GetHeaders() {
-		headersText += fmt.Sprintf("  %s: %s\n", h.Key, h.Value)
+		sb.WriteString(fmt.Sprintf("  %s: %s\n", h.Key, h.Value))
 	}
+	sb.WriteString(model.GetHeaderInput().View())
 
-	input := headersText + model.GetHeaderInput().View()
+	input := model.GetHeaderInput()
+	style := r.styles.inputStyle.Width(input.Width).Height(len(model.GetHeaders()) + 1)
 	if model.GetActiveSection() == models.SectionHeaders && model.GetInputMode() {
-		input = r.styles.activeInputStyle.Width(leftWidth - 4).Height(len(model.GetHeaders()) + 1).Render(input)
-	} else {
-		input = r.styles.inputStyle.Width(leftWidth - 4).Height(len(model.GetHeaders()) + 1).Render(input)
+		style = r.styles.activeInputStyle.Width(input.Width).Height(len(model.GetHeaders()) + 1)
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	return lipgloss.JoinHorizontal(lipgloss.Top,
 		r.styles.labelStyle.Render(label),
-		input,
+		style.Render(sb.String()),
 	)
 }
 
-// renderBodySection рендерит секцию тела запроса
-func (r *UIRenderer) renderBodySection(model *models.AppModel, leftWidth int) string {
+func (r *UIRenderer) renderBodySection(model *models.AppModel) string {
 	label := "[4] Тело:"
 	if model.GetActiveSection() == models.SectionBody {
 		label = r.styles.activeSectionStyle.Render("[4] Тело:")
 	}
 
-	input := model.GetBodyInput().View()
+	input := model.GetBodyInput()
+	view := input.View()
+	style := r.styles.inputStyle.Width(input.Width()).Height(input.Height())
 	if model.GetActiveSection() == models.SectionBody && model.GetInputMode() {
-		input = r.styles.activeInputStyle.Width(leftWidth - 4).Height(12).Render(input)
-	} else {
-		input = r.styles.inputStyle.Width(leftWidth - 4).Height(12).Render(input)
+		style = r.styles.activeInputStyle.Width(input.Width()).Height(input.Height())
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left,
+	return lipgloss.JoinHorizontal(lipgloss.Top,
 		r.styles.labelStyle.Render(label),
-		input,
+		style.Render(view),
 	)
 }
 
-// renderParamsSection рендерит секцию параметров запроса
-func (r *UIRenderer) renderParamsSection(model *models.AppModel, leftWidth int) string {
+func (r *UIRenderer) renderParamsSection(model *models.AppModel) string {
 	label := "[5] Параметры:"
 	if model.GetActiveSection() == models.SectionParams {
 		label = r.styles.activeSectionStyle.Render("[5] Параметры:")
 	}
 
-	paramsText := ""
+	var sb strings.Builder
 	for _, p := range model.GetParams() {
-		paramsText += fmt.Sprintf("  %s: %s\n", p.Key, p.Value)
+		sb.WriteString(fmt.Sprintf("  %s: %s\n", p.Key, p.Value))
+	}
+	sb.WriteString(model.GetParamInput().View())
+
+	input := model.GetParamInput()
+	style := r.styles.inputStyle.Width(input.Width).Height(len(model.GetParams()) + 1)
+	if model.GetActiveSection() == models.SectionParams && model.GetInputMode() {
+		style = r.styles.activeInputStyle.Width(input.Width).Height(len(model.GetParams()) + 1)
 	}
 
-	input := paramsText + model.GetParamInput().View()
-	if model.GetActiveSection() == models.SectionParams {
-		input = r.styles.activeInputStyle.Width(leftWidth - 4).Height(len(model.GetParams()) + 1).Render(input)
-	} else {
-		input = r.styles.inputStyle.Width(leftWidth - 4).Height(len(model.GetParams()) + 1).Render(input)
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		r.styles.labelStyle.Render(label),
-		input,
-	)
-}
-
-// renderResponseSection рендерит секцию ответа
-func (r *UIRenderer) renderResponseSection(model *models.AppModel, rightWidth int) string {
-	label := "[6] Ответ:"
-	if model.GetActiveSection() == models.SectionResponse {
-		label = r.styles.activeSectionStyle.Render("[6] Ответ:")
-	}
-
-	viewportHeight := model.GetResponseVP().Height
-	input := model.GetResponseVP().View()
-	if model.GetActiveSection() == models.SectionResponse {
-		input = r.styles.activeInputStyle.Width(rightWidth - 4).Height(viewportHeight).Render(input)
-	} else {
-		input = r.styles.inputStyle.Width(rightWidth - 4).Height(viewportHeight).Render(input)
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		r.styles.labelStyle.Render(label),
-		input,
-	)
-}
-
-// renderStatusInfo рендерит информацию о статусе
-func (r *UIRenderer) renderStatusInfo(model *models.AppModel) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		r.styles.labelStyle.Render("Статус:"),
-		lipgloss.NewStyle().Width(20).Render(model.GetStatus()),
-		r.styles.labelStyle.Render("Время:"),
-		lipgloss.NewStyle().Width(15).Render(model.GetResponseTime()),
+		r.styles.labelStyle.Render(label),
+		style.Render(sb.String()),
 	)
-}
-
-// renderStatusMessage рендерит сообщение о статусе
-func (r *UIRenderer) renderStatusMessage(model *models.AppModel) string {
-	if model.GetLoading() {
-		return "⏳ Отправка запроса..."
-	} else if model.GetErrorMsg() != "" {
-		return r.styles.errorStyle.Render("Ошибка: " + model.GetErrorMsg())
-	} else if model.GetStatus() != "" {
-		return r.styles.successStyle.Render("✓ Запрос выполнен")
-	}
-	return ""
 }
